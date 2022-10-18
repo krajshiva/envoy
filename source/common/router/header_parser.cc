@@ -27,6 +27,7 @@ enum class ParserState {
   String,                    // consuming an array element string
   ExpectArrayDelimiterOrEnd, // expect array delimiter (,) or end of array (])
   ExpectArgsEnd,             // expect closing ) in %VAR(...)%
+  UnexpectedState,             // expect closing ) in %VAR(...)%
   ExpectVariableEnd          // expect closing % in %VAR(...)%
 };
 
@@ -67,6 +68,32 @@ HeaderFormatterPtr parseInternal(const envoy::config::core::v3::HeaderValue& hea
     const bool has_next_ch = (pos + 1) < format.size();
 
     switch (state) {
+    case ParserState::UnexpectedState:
+      if (ch != '%') {
+        break;
+      }
+
+      if (!has_next_ch) {
+        throw EnvoyException(
+            fmt::format("Invalid header configuration. Un-escaped % at position {}", pos));
+      }
+
+      if (format[pos + 1] == '%') {
+        // Escaped %, skip next character.
+        pos++;
+        break;
+      }
+
+      // Un-escaped %: start of variable name. Create a formatter for preceding characters, if
+      // any.
+      state = ParserState::VariableName;
+      if (pos > start) {
+        absl::string_view literal = format.substr(start, pos - start);
+        formatters.emplace_back(new PlainHeaderFormatter(unescape(literal), append));
+      }
+      start = pos + 1;
+      break;
+
     case ParserState::Literal:
       // Searching for start of %VARIABLE% expression.
       if (ch != '%') {
